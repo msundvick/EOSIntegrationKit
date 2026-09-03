@@ -45,8 +45,16 @@ bool UNetDriverEIKBase::IsAvailable() const
 		return false;
 	}
 
-	if (ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(EOS_SOCKETSUBSYSTEM))
+	if (FSocketSubsystemEIK* SocketSubsystem = static_cast<FSocketSubsystemEIK*>(ISocketSubsystem::Get(EOS_SOCKETSUBSYSTEM)))
 	{
+#if WITH_EOS_SDK
+		// Without a logged-in local EOS user we can't bind a P2P address, so fall back
+		// to IpNetDriver (via DriverClassNameFallback) instead of failing InitBase/InitListen.
+		if (SocketSubsystem->GetLocalUserId() == nullptr)
+		{
+			return false;
+		}
+#endif
 		return true;
 	}
 
