@@ -1368,10 +1368,50 @@ void FUserManagerEOS::RefreshConnectLogin(int32 LocalUserNum)
 		return;
 	}
 
-	if(LocalUserNumToLastLoginCredentials[0]->Type == TEXT("deviceid"))
+	// Device ID logins ("deviceid" or "noeas_+_EIK_ECT_DEVICEID_ACCESS_TOKEN") need no external token.
+	// Without this branch they fall through to the platform OSS path below, which fails and logs the user out
+	// when the Connect auth expires (~1 hour), which drops P2P connections.
+	const FString& LastLoginType = LocalUserNumToLastLoginCredentials[0]->Type;
+	if (LastLoginType == TEXT("deviceid") || LastLoginType.Contains(TEXT("EIK_ECT_DEVICEID_ACCESS_TOKEN")))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Refresh Connect Login for Device ID"));
-		LoginViaConnectInterface(*LocalUserNumToLastLoginCredentials[0]);
+		UE_LOG(LogEIK, Log, TEXT("Refreshing ConnectLogin(%d) with Device ID"), LocalUserNum);
+
+		// Re-login with the same device ID. EOS refreshes the auth for the existing ProductUserId, so this skips
+		// CompleteDeviceIDLogin to avoid re-adding the local user and re-firing login complete delegates.
+		FTCHARToUTF8 DisplayNameUtf8(LocalUserNumToLastLoginCredentials[0]->Id.IsEmpty() ? TEXT("player") : *LocalUserNumToLastLoginCredentials[0]->Id);
+
+		EOS_Connect_Credentials Credentials = { };
+		Credentials.ApiVersion = EOS_CONNECT_CREDENTIALS_API_LATEST;
+		Credentials.Type = EOS_EExternalCredentialType::EOS_ECT_DEVICEID_ACCESS_TOKEN;
+		Credentials.Token = nullptr;
+
+		EOS_Connect_UserLoginInfo LoginInfo = { };
+		LoginInfo.ApiVersion = EOS_CONNECT_USERLOGININFO_API_LATEST;
+		LoginInfo.DisplayName = DisplayNameUtf8.Get();
+
+		EOS_Connect_LoginOptions Options = { };
+		Options.ApiVersion = EOS_CONNECT_LOGIN_API_LATEST;
+		Options.Credentials = &Credentials;
+		Options.UserLoginInfo = &LoginInfo;
+
+#if ENGINE_MAJOR_VERSION == 5
+		FConnectLoginCallback* CallbackObj = new FConnectLoginCallback(AsWeak());
+#else
+		FConnectLoginCallback* CallbackObj = new FConnectLoginCallback();
+#endif
+		CallbackObj->CallbackLambda = [LocalUserNum, this](const EOS_Connect_LoginCallbackInfo* Data)
+		{
+			if (Data->ResultCode == EOS_EResult::EOS_Success)
+			{
+				UE_LOG(LogEIK, Log, TEXT("Refreshed ConnectLogin(%d) with Device ID"), LocalUserNum);
+			}
+			else
+			{
+				UE_LOG_ONLINE(Error, TEXT("Failed to refresh ConnectLogin(%d) with Device ID, EOS result code (%s)"), LocalUserNum, ANSI_TO_TCHAR(EOS_EResult_ToString(Data->ResultCode)));
+				Logout(LocalUserNum);
+			}
+		};
+		EOS_Connect_Login(EOSSubsystem->ConnectHandle, &Options, CallbackObj, CallbackObj->GetCallbackPtr());
 		return;
 	}
 
